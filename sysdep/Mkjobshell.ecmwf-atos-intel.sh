@@ -1,0 +1,229 @@
+#! /bin/bash -x
+
+GLEV=${1}
+RLEV=${2}
+NMPI=${3}
+ZL=${4}
+VGRID=${5}
+TOPDIR=${6}
+BINNAME=${7}
+
+# System specific
+MPIEXEC="srun"
+
+GL=`printf %02d ${GLEV}`
+RL=`printf %02d ${RLEV}`
+if   [ ${NMPI} -ge 10000 ]; then
+    NP=`printf %05d ${NMPI}`
+elif [ ${NMPI} -ge 1000 ]; then
+    NP=`printf %04d ${NMPI}`
+elif [ ${NMPI} -ge 100 ]; then
+    NP=`printf %03d ${NMPI}`
+else
+    NP=`printf %02d ${NMPI}`
+fi
+
+dir2d=gl${GL}rl${RL}pe${NP}
+dir3d=gl${GL}rl${RL}z${ZL}pe${NP}
+res2d=GL${GL}RL${RL}
+res3d=GL${GL}RL${RL}z${ZL}
+
+MNGINFO=rl${RL}-prc${NP}.info
+
+NNODE=`expr \( $NMPI - 1 \) / 128 + 1`
+NPROC=`expr $NMPI / $NNODE`
+
+cat << EOF1 > run.sh
+#! /bin/bash -x
+################################################################################
+#
+# for ECMWf ATOS system with SLURM
+#
+################################################################################
+#SBATCH --qos=np
+#SBATCH --job-name=NICAMDC
+#SBATCH --nodes=${NNODE}
+#SBATCH --ntasks-per-node=${NPROC}
+#SBATCH --time=00:30:00
+set -e
+
+module load prgenv/intel
+module load intel/2021.4.0
+module load hpcx-openmpi/2.9.0
+module load netcdf4/4.9.2
+module load hdf5/1.14.3
+
+export OMP_NUM_THREADS=1
+export LD_LIBRARY_PATH=$NETCDF4_DIR/lib:$HDF5_DIR/lib:\$LD_LIBRARY_PATH
+export LD_LIBRARY_PATH=$INTEL_DIR/compiler/latest/linux/compiler/lib/intel64/:\$LD_LIBRARY_PATH
+
+ln -svf ${TOPDIR}/bin/${BINNAME} .
+ln -svf ${TOPDIR}/data/mnginfo/${MNGINFO} .
+ln -svf ${TOPDIR}/data/grid/vgrid/${VGRID} .
+EOF1
+
+for f in $( ls ${TOPDIR}/data/grid/boundary/${dir2d} )
+do
+   echo "ln -svf ${TOPDIR}/data/grid/boundary/${dir2d}/${f} ." >> run.sh
+done
+
+cat << EOF2 >> run.sh
+
+${MPIEXEC} ./${BINNAME} || exit 1
+
+################################################################################
+EOF2
+
+
+cat << EOFICO2LL1 > ico2ll.sh
+#! /bin/bash -x
+################################################################################
+#
+# for ECMWf ATOS system with SLURM
+#
+################################################################################
+export FORT_FMT_RECL=400
+
+
+ln -sv ${TOPDIR}/bin/fio_ico2ll_mpi .
+ln -sv ${TOPDIR}/data/mnginfo/${MNGINFO} .
+ln -sv ${TOPDIR}/data/zaxis .
+EOFICO2LL1
+
+for f in $( ls ${TOPDIR}/data/grid/llmap/gl${GL}rl${RL}/ )
+do
+   echo "ln -sv ${TOPDIR}/data/grid/llmap/gl${GL}rl${RL}/${f} ." >> ico2ll.sh
+done
+
+cat << EOFICO2LL2 >> ico2ll.sh
+
+# run
+${MPIEXEC} ./fio_ico2ll_mpi \
+history \
+glevel=${GLEV} \
+rlevel=${RLEV} \
+mnginfo="./${MNGINFO}" \
+layerfile_dir="./zaxis" \
+llmap_base="./llmap" \
+-lon_swap \
+-comm_smallchunk
+
+################################################################################
+EOFICO2LL2
+
+
+cat << EOFICO2LLNC1 > ico2ll_netcdf.sh
+#! /bin/bash -x
+################################################################################
+#
+# ------ FOR Linux64 & intel C&fortran & openmpi -----
+#
+################################################################################
+export FORT_FMT_RECL=400
+
+glev=5          # g-level of original grid
+case=163        # test case number
+out_intev='1hr' # output interval (format: "1hr", "6hr", "day", "100s")
+
+# ------------------------------------------------------------------------------
+
+ln -sv ${TOPDIR}/bin/fio_ico2ll_mpi .
+ln -sv ${TOPDIR}/data/mnginfo/${MNGINFO} .
+ln -sv ${TOPDIR}/data/zaxis .
+EOFICO2LLNC1
+
+for f in $( ls ${TOPDIR}/data/grid/llmap/gl${GL}rl${RL}/ )
+do
+   echo "ln -sv ${TOPDIR}/data/grid/llmap/gl${GL}rl${RL}/${f} ." >> ico2ll_netcdf.sh
+done
+
+cat << EOFICO2LLNC2 >> ico2ll_netcdf.sh
+
+# run
+${MPIEXEC} ./fio_ico2ll_mpi \
+history \
+glevel=${GLEV} \
+rlevel=${RLEV} \
+mnginfo="./${MNGINFO}" \
+layerfile_dir="./zaxis" \
+llmap_base="./llmap" \
+output_netcdf=.true. \
+dcmip2016=.true. \
+-lon_swap \
+-comm_smallchunk
+
+# netcdf combine
+case \${glev} in
+5)
+ reso='r200'
+;;
+6)
+ reso='r100'
+;;
+7)
+ reso='r50'
+;;
+8)
+ reso='r25'
+;;
+esac
+
+case \${case} in
+161) # Moist baroclinic wave
+levs='L30'
+target=( u.nc v.nc w.nc prs.nc t.nc qv.nc qc.nc qr.nc pasv1.nc pasv2.nc \
+u850.nc v850.nc w850.nc t850.nc w500.nc t500.nc ps.nc prcp.nc \
+forcing_vx.nc forcing_vy.nc forcing_vz.nc forcing_e.nc \
+forcing_qv.nc forcing_qc.nc forcing_qr.nc forcing_cl.nc forcing_cl2.nc \
+cl_column.nc cl2_column.nc cly_column.nc )
+;;
+162) # Idealized tropical cyclone
+levs='L30'
+target=( u.nc v.nc w.nc prs.nc t.nc qv.nc qc.nc qr.nc \
+u850.nc v850.nc w850.nc t850.nc w500.nc t500.nc ps.nc prcp.nc \
+forcing_vx.nc forcing_vy.nc forcing_vz.nc forcing_e.nc \
+forcing_qv.nc forcing_qc.nc forcing_qr.nc )
+;;
+163) # Supercell
+levs='L40'
+target=( u.nc v.nc w.nc prs.nc t.nc qv.nc qc.nc qr.nc \
+u850.nc v850.nc w850.nc t850.nc w500.nc t500.nc ps.nc prcp.nc \
+forcing_vx.nc forcing_vy.nc forcing_vz.nc forcing_e.nc \
+forcing_qv.nc forcing_qc.nc forcing_qr.nc )
+;;
+esac
+
+model='nicam'
+org_grid='hex'
+dat_grid='interp_latlon'
+equation='nonhydro'
+description='g-level_'\${glev}
+
+fname=\${model}.\${case}.\${reso}.\${levs}.\${dat_grid}.\${equation}.nc
+
+input=""
+for (( i=0; i <\${#target[@]}; ++i ))
+do
+input=\$input" "\${target[\$i]}
+done
+
+echo "start cdo process"
+cdo -s merge \${input}                                           temporary_A.nc
+cdo -s setgatt,model,\${model}                                   temporary_A.nc temporary_B.nc
+rm temporary_A.nc; cdo -s setgatt,test_case,\${case}             temporary_B.nc temporary_A.nc
+rm temporary_B.nc; cdo -s setgatt,horizontal_resolution,\${reso} temporary_A.nc temporary_B.nc
+rm temporary_A.nc; cdo -s setgatt,levels,\${levs}                temporary_B.nc temporary_A.nc
+rm temporary_B.nc; cdo -s setgatt,grid,\${dat_grid}              temporary_A.nc temporary_B.nc
+rm temporary_A.nc; cdo -s setgatt,equation,\${equation}          temporary_B.nc temporary_A.nc
+rm temporary_B.nc; cdo -s setgatt,time_frequency,\${out_intev}   temporary_A.nc temporary_B.nc
+rm temporary_A.nc; cdo -s setgatt,description,\${description}    temporary_B.nc temporary_A.nc
+cdo -s setgatt,history,dcmip2016                                temporary_A.nc \${fname}
+
+for (( i=0; i <\${#target[@]}; ++i ))
+do
+ rm \${target[\$i]}
+done
+rm temporary_A.nc temporary_B.nc
+
+################################################################################
+EOFICO2LLNC2

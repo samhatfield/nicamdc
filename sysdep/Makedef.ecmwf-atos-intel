@@ -1,0 +1,51 @@
+#
+# ------ FOR Linux 64bit & intel fortran&C & OpenMPI1.4 -----
+#
+
+##### for computation
+
+FFLAGS_FAST = -fpp -O3 -ip                 \
+              -assume byterecl -convert big_endian \
+              -ftz -fp-model precise -pc 80        \
+              -mcmodel=medium -shared-intel        \
+               -fno-alias
+
+FFLAGS_DEBUG = -fpp -O0 -m64                       \
+               -assume byterecl -convert big_endian \
+               -fp-model precise -pc 80             \
+               -check all -warn all -g -traceback   \
+               -mcmodel=medium -shared-intel        \
+               -fno-alias
+
+FC     = mpif90
+FFLAGS = $(FFLAGS_FAST)
+#FFLAGS = $(FFLAGS_DEBUG)
+
+CC     = mpicc
+CFLAGS = -O3 -ip -ftz -mcmodel=medium -shared-intel
+
+##### Special Options #####
+
+ifeq ($(ENABLE_OPENMP),T)
+    FFLAGS += -openmp -openmp-report
+endif
+
+ifeq ($(ENABLE_NETCDF),T)
+    NETCDF_INCLUDE ?= -I$(NETCDF4_DIR)/include
+    NETCDF_LIBS    ?= -L$(NETCDF4_DIR)/lib -L$(HDF5_DIR)/lib -lnetcdff -lnetcdf -lhdf5_hl -lhdf5 -lm -lz
+    FFLAGS += $(NETCDF_INCLUDE)
+endif
+
+###########################
+
+MODDIROPT ?= -module $(BUILDDIR)
+OBJDIR    ?= $(BUILDDIR)
+
+LD     = $(FC)
+LDFLAGS = $(FFLAGS)
+
+INSTALL = install
+AR      = ar
+ARFLAGS = r
+RANLIB  = ranlib
+JOBSUB  = sbatch
